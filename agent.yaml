@@ -25,7 +25,7 @@ runtime:
   dependencies: package.json
   default_model:
     provider: anthropic
-    model: claude-sonnet-4-5-20250929
+    model: claude-haiku-4-5-20251001
   resources:
     max_memory: 2GB
     max_cpu: 2

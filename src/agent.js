@@ -4,7 +4,7 @@ import { createInterface } from "readline";
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 const BRAVE_BASE_URL = process.env.BRAVE_BASE_URL || "https://api.search.brave.com";
 const BRAVE_SEARCH_URL = `${BRAVE_BASE_URL}/res/v1/web/search`;
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5-20250929";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
 const anthropic = new Anthropic();
 
