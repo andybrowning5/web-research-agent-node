@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createInterface } from "readline";
+import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync } from "fs";
+import { join } from "path";
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 const BRAVE_BASE_URL = process.env.BRAVE_BASE_URL || "https://api.search.brave.com";
@@ -14,6 +16,77 @@ function send(msg) {
 
 function log(text) {
   process.stderr.write(text + "\n");
+}
+
+// --- Conversational Memory ---
+
+const MEMORY_DIR = "/home/user/data/memory";
+const CONVERSATIONS_FILE = join(MEMORY_DIR, "conversations.jsonl");
+const FACTS_FILE = join(MEMORY_DIR, "facts.json");
+
+function initMemory() {
+  mkdirSync(MEMORY_DIR, { recursive: true });
+  if (!existsSync(CONVERSATIONS_FILE)) writeFileSync(CONVERSATIONS_FILE, "");
+  if (!existsSync(FACTS_FILE)) writeFileSync(FACTS_FILE, JSON.stringify({ facts: [], entities: {} }));
+}
+
+function saveTurn(userMsg, assistantMsg) {
+  const entry = { timestamp: new Date().toISOString(), user: userMsg, assistant: assistantMsg };
+  appendFileSync(CONVERSATIONS_FILE, JSON.stringify(entry) + "\n");
+}
+
+function getRecentConversations(limit = 10) {
+  try {
+    const lines = readFileSync(CONVERSATIONS_FILE, "utf-8").trim().split("\n").filter(Boolean);
+    return lines.slice(-limit).map((l) => JSON.parse(l));
+  } catch { return []; }
+}
+
+function loadFacts() {
+  try { return JSON.parse(readFileSync(FACTS_FILE, "utf-8")); } catch { return { facts: [], entities: {} }; }
+}
+
+function getContext() {
+  const parts = [];
+  const recent = getRecentConversations();
+  if (recent.length) {
+    parts.push("### Recent research sessions");
+    for (const c of recent) {
+      parts.push(`[${c.timestamp}] Query: ${c.user.slice(0, 150)}`);
+      parts.push(`Result: ${c.assistant.slice(0, 200)}`);
+    }
+  }
+  const facts = loadFacts();
+  if (facts.facts?.length) {
+    parts.push("\n### Known facts");
+    for (const f of facts.facts) parts.push(`- ${f}`);
+  }
+  if (facts.entities && Object.keys(facts.entities).length) {
+    parts.push("\n### Known entities");
+    for (const [name, info] of Object.entries(facts.entities)) {
+      parts.push(`- ${name}: ${typeof info === "string" ? info : JSON.stringify(info)}`);
+    }
+  }
+  return parts.join("\n") || "";
+}
+
+function searchMemory(query) {
+  const q = query.toLowerCase();
+  const results = [];
+  for (const c of getRecentConversations(50)) {
+    if ((c.user + c.assistant).toLowerCase().includes(q)) {
+      results.push(`[${c.timestamp}] Query: ${c.user.slice(0, 100)} → Result: ${c.assistant.slice(0, 100)}`);
+    }
+  }
+  const facts = loadFacts();
+  for (const f of facts.facts || []) {
+    if (f.toLowerCase().includes(q)) results.push(`Fact: ${f}`);
+  }
+  for (const [name, info] of Object.entries(facts.entities || {})) {
+    const infoStr = typeof info === "string" ? info : JSON.stringify(info);
+    if ((name + infoStr).toLowerCase().includes(q)) results.push(`Entity: ${name} — ${infoStr}`);
+  }
+  return results.length ? results.join("\n") : `No results for "${query}"`;
 }
 
 // --- Brave Search ---
@@ -47,9 +120,22 @@ const tools = [
       required: ["query"],
     },
   },
+  {
+    name: "remember",
+    description:
+      "Search your memory for past research sessions, facts, and entities. Use this when the user references something from a previous session or asks what you know about a topic.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string", description: "What to search for in memory" } },
+      required: ["query"],
+    },
+  },
 ];
 
-const toolHandlers = { web_search: ({ query }) => webSearch(query) };
+const toolHandlers = {
+  web_search: ({ query }) => webSearch(query),
+  remember: ({ query }) => searchMemory(query),
+};
 
 // --- Agentic loop ---
 
@@ -60,6 +146,8 @@ async function research(query, messageId) {
     day: "numeric",
   });
 
+  const memoryContext = getContext();
+
   const systemPrompt =
     `You are Web Research Agent, an expert research assistant. Today is ${today}. ` +
     "Your job is to thoroughly research the user's question using web search. " +
@@ -69,9 +157,18 @@ async function research(query, messageId) {
     "3. For simple greetings or non-research questions, just respond naturally without searching\n" +
     "4. Synthesize all findings into a clear, well-structured briefing with markdown\n" +
     "5. Include inline citations [1], [2] etc. and end with a Sources section\n" +
-    "Be thorough but concise. Prioritize accuracy and recency.";
+    "Be thorough but concise. Prioritize accuracy and recency.\n\n" +
+    "## Memory\n" +
+    "You have persistent memory across sessions. Previous research and facts are automatically provided below. " +
+    "Use the `remember` tool to search for specific past topics when needed.\n\n" +
+    "If the user references a previous session (e.g. 'what did you find about X last time?'), " +
+    "check your memory context or use the remember tool.";
 
-  const messages = [{ role: "user", content: query }];
+  const enrichedQuery = memoryContext
+    ? `## Memory context from past sessions\n${memoryContext}\n\n## User message\n${query}`
+    : query;
+
+  const messages = [{ role: "user", content: enrichedQuery }];
 
   while (true) {
     const resp = await anthropic.messages.create({
@@ -98,7 +195,9 @@ async function research(query, messageId) {
     // If no tool use, extract final text and return
     if (resp.stop_reason === "end_turn" || !resp.content.some((b) => b.type === "tool_use")) {
       const textBlocks = resp.content.filter((b) => b.type === "text");
-      return textBlocks.map((b) => b.text).join("") || "";
+      const result = textBlocks.map((b) => b.text).join("") || "";
+      saveTurn(query, result);
+      return result;
     }
 
     // Process tool calls
@@ -122,6 +221,7 @@ async function research(query, messageId) {
 // --- Primordial Protocol ---
 
 function main() {
+  initMemory();
   send({ type: "ready" });
   log("Web Research Agent (Node.js) ready");
 
