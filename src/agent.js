@@ -173,7 +173,7 @@ async function research(query, messageId) {
   while (true) {
     const resp = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 4096,
+      max_tokens: 200000,
       system: systemPrompt,
       tools,
       messages,
