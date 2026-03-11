@@ -2,10 +2,9 @@ name: web-research-agent-node
 display_name: Web Research Agent (Node.js)
 version: 0.1.0
 description: >
-  Research agent that searches the web for real-time information and synthesizes
-  concise, sourced briefings. Uses Anthropic tool use to break down complex
-  questions, search multiple angles, and deliver thorough answers with citations.
-  Node.js port — faster sandbox setup via npm install.
+  Searches the web and synthesizes sourced briefings with inline citations.
+  Breaks complex questions into sub-queries for broader coverage.
+  Persistent memory across sessions.
 
 category: research
 tags:
